@@ -1,123 +1,64 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
-from datetime import datetime
 
-# =====================
-# BANCO
-# =====================
-conn = sqlite3.connect("luhvee.db", check_same_thread=False)
-c = conn.cursor()
+st.set_page_config(page_title="LuhVee CRM 💖", layout="wide")
 
-c.execute("""
-CREATE TABLE IF NOT EXISTS leads (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-nome TEXT,
-whatsapp TEXT,
-email TEXT,
-interesse TEXT,
-data TEXT
-)
-""")
+st.title("💖 LuhVee Store - CRM + Catálogo Automático 👠")
 
-c.execute("""
-CREATE TABLE IF NOT EXISTS produtos (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-nome TEXT,
-preco REAL,
-categoria TEXT,
-link TEXT
-)
-""")
+# =========================
+# CARREGAR CSV DE PRODUTOS
+# =========================
 
-conn.commit()
+st.subheader("👠 Catálogo de Produtos")
 
-# =====================
-# FUNÇÕES
-# =====================
-def add_lead(n,w,e,i):
-    c.execute("INSERT INTO leads VALUES (NULL,?,?,?,?,?)",
-              (n,w,e,i,str(datetime.now())))
-    conn.commit()
+try:
+    df = pd.read_csv("produtos.csv")
 
-def get_leads():
-    return pd.read_sql("SELECT * FROM leads", conn)
+    st.success("Produtos carregados com sucesso 💖")
 
-def add_prod(nome,preco,cat,link):
-    c.execute("INSERT INTO produtos VALUES (NULL,?,?,?,?)",
-              (nome,preco,cat,link))
-    conn.commit()
+    # mostrar tabela
+    st.dataframe(df, use_container_width=True)
 
-def get_prod():
-    return pd.read_sql("SELECT * FROM produtos", conn)
+    # catálogo visual
+    for i, row in df.iterrows():
 
-# =====================
-# LOGIN SIMPLES
-# =====================
-st.sidebar.title("🔐 LuhVee Admin")
-senha = st.sidebar.text_input("Senha", type="password")
+        st.markdown("---")
 
-if senha != "luhvee123":
-    st.warning("Digite a senha para acessar")
-    st.stop()
+        col1, col2 = st.columns([1, 3])
 
-# =====================
-# MENU
-# =====================
-menu = st.sidebar.selectbox("Menu", ["CRM","Produtos","Dashboard"])
+        with col1:
+            if "link" in df.columns:
+                st.image(row["link"], width=120)
 
-# =====================
-# CRM
-# =====================
-if menu == "CRM":
-    st.title("💖 Leads LuhVee")
+        with col2:
+            st.markdown(f"### 👠 {row['nome']}")
+            st.markdown(f"💰 Preço: R$ {row['preco']}")
+            st.markdown(f"📦 Categoria: {row['categoria']}")
 
-    n = st.text_input("Nome")
-    w = st.text_input("WhatsApp")
-    e = st.text_input("Email")
-    i = st.selectbox("Interesse",["Sapatos","Botas","Scarpin","Sandálias"])
+            whatsapp = "5511948021428"
 
-    if st.button("Salvar"):
-        add_lead(n,w,e,i)
-        st.success("Salvo 💖")
+            msg = f"Olá 💖 tenho interesse no produto: {row['nome']}"
 
-        st.code(f"""
-Olá 💖
-Temos novidades em {i} 👠✨
+            link_whats = f"https://wa.me/{whatsapp}?text={msg}"
 
-Clique aqui:
-https://wa.me/55{w}
-""")
+            st.markdown(f"[💬 Quero esse no WhatsApp]({link_whats})")
 
-    st.dataframe(get_leads())
+except Exception as e:
+    st.error("❌ Não foi possível carregar o produtos.csv")
+    st.write(e)
 
-# =====================
-# PRODUTOS
-# =====================
-elif menu == "Produtos":
-    st.title("👠 Catálogo LuhVee")
+# =========================
+# UPLOAD CSV (backup)
+# =========================
 
-    nome = st.text_input("Nome do produto")
-    preco = st.number_input("Preço")
-    cat = st.selectbox("Categoria",["Sapatos","Botas","Scarpin"])
-    link = st.text_input("Link imagem")
+st.subheader("📂 Atualizar catálogo via CSV")
 
-    if st.button("Adicionar"):
-        add_prod(nome,preco,cat,link)
-        st.success("Produto adicionado")
+upload = st.file_uploader("Envie seu produtos2(1).csv", type=["csv"])
 
-    st.dataframe(get_prod())
+if upload is not None:
+    df_upload = pd.read_csv(upload)
+    st.dataframe(df_upload)
 
-# =====================
-# DASHBOARD
-# =====================
-elif menu == "Dashboard":
-    st.title("📊 Dashboard")
-
-    leads = get_leads()
-    prod = get_prod()
-
-    st.metric("Leads", len(leads))
-    st.metric("Produtos", len(prod))
-
-    st.bar_chart(leads["interesse"].value_counts())
+    if st.button("Salvar atualização 💖"):
+        df_upload.to_csv("produtos.csv", index=False)
+        st.success("Catálogo atualizado com sucesso!")
