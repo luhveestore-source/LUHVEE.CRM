@@ -53,7 +53,7 @@ except Exception as e:
 
 st.subheader("📂 Atualizar catálogo via CSV")
 
-upload = st.file_uploader("Envie seu produtos2(1).csv", type=["csv"])
+upload = st.file_uploader("Envie seu produtos2.csv", type=["csv"])
 
 if upload is not None:
     df_upload = pd.read_csv(upload)
