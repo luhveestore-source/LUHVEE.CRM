@@ -1,42 +1,123 @@
 import streamlit as st
+import sqlite3
 import pandas as pd
+from datetime import datetime
 
-# banco simples
-if "leads" not in st.session_state:
-    st.session_state.leads = []
+# =====================
+# BANCO
+# =====================
+conn = sqlite3.connect("luhvee.db", check_same_thread=False)
+c = conn.cursor()
 
-st.title("💖 LuhVee CRM - Leads")
+c.execute("""
+CREATE TABLE IF NOT EXISTS leads (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+nome TEXT,
+whatsapp TEXT,
+email TEXT,
+interesse TEXT,
+data TEXT
+)
+""")
 
-st.subheader("Adicionar Lead")
+c.execute("""
+CREATE TABLE IF NOT EXISTS produtos (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+nome TEXT,
+preco REAL,
+categoria TEXT,
+link TEXT
+)
+""")
 
-nome = st.text_input("Nome")
-whatsapp = st.text_input("WhatsApp")
-email = st.text_input("Email")
-interesse = st.selectbox("Interesse", ["Sapatos", "Botas", "Scarpin", "Sandálias"])
+conn.commit()
 
-if st.button("Salvar Lead 💖"):
-    st.session_state.leads.append({
-        "Nome": nome,
-        "WhatsApp": whatsapp,
-        "Email": email,
-        "Interesse": interesse
-    })
-    st.success("Lead salvo com sucesso!")
+# =====================
+# FUNÇÕES
+# =====================
+def add_lead(n,w,e,i):
+    c.execute("INSERT INTO leads VALUES (NULL,?,?,?,?,?)",
+              (n,w,e,i,str(datetime.now())))
+    conn.commit()
 
-st.subheader("Lista de Leads")
+def get_leads():
+    return pd.read_sql("SELECT * FROM leads", conn)
 
-df = pd.DataFrame(st.session_state.leads)
-st.dataframe(df)
+def add_prod(nome,preco,cat,link):
+    c.execute("INSERT INTO produtos VALUES (NULL,?,?,?,?)",
+              (nome,preco,cat,link))
+    conn.commit()
 
-st.subheader("Mensagem WhatsApp automática")
+def get_prod():
+    return pd.read_sql("SELECT * FROM produtos", conn)
 
-mensagem = """
+# =====================
+# LOGIN SIMPLES
+# =====================
+st.sidebar.title("🔐 LuhVee Admin")
+senha = st.sidebar.text_input("Senha", type="password")
+
+if senha != "luhvee123":
+    st.warning("Digite a senha para acessar")
+    st.stop()
+
+# =====================
+# MENU
+# =====================
+menu = st.sidebar.selectbox("Menu", ["CRM","Produtos","Dashboard"])
+
+# =====================
+# CRM
+# =====================
+if menu == "CRM":
+    st.title("💖 Leads LuhVee")
+
+    n = st.text_input("Nome")
+    w = st.text_input("WhatsApp")
+    e = st.text_input("Email")
+    i = st.selectbox("Interesse",["Sapatos","Botas","Scarpin","Sandálias"])
+
+    if st.button("Salvar"):
+        add_lead(n,w,e,i)
+        st.success("Salvo 💖")
+
+        st.code(f"""
 Olá 💖
+Temos novidades em {i} 👠✨
 
-Aqui é da LuhVee Stores Shoes 👠✨
-Temos novidades incríveis pra você!
+Clique aqui:
+https://wa.me/55{w}
+""")
 
-Me chama aqui 👉 https://wa.me/5511948021428
-"""
+    st.dataframe(get_leads())
 
-st.code(mensagem)
+# =====================
+# PRODUTOS
+# =====================
+elif menu == "Produtos":
+    st.title("👠 Catálogo LuhVee")
+
+    nome = st.text_input("Nome do produto")
+    preco = st.number_input("Preço")
+    cat = st.selectbox("Categoria",["Sapatos","Botas","Scarpin"])
+    link = st.text_input("Link imagem")
+
+    if st.button("Adicionar"):
+        add_prod(nome,preco,cat,link)
+        st.success("Produto adicionado")
+
+    st.dataframe(get_prod())
+
+# =====================
+# DASHBOARD
+# =====================
+elif menu == "Dashboard":
+    st.title("📊 Dashboard")
+
+    leads = get_leads()
+    prod = get_prod()
+
+    st.metric("Leads", len(leads))
+    st.metric("Produtos", len(prod))
+
+    st.bar_chart(leads["interesse"].value_counts())
