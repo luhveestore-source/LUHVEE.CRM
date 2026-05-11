@@ -1,64 +1,87 @@
 import streamlit as st
 import pandas as pd
 
-st.set_page_config(page_title="LuhVee CRM 💖", layout="wide")
+st.set_page_config(page_title="LuhVee Store 💖", layout="wide")
 
-st.title("💖 LuhVee Store - CRM + Catálogo Automático 👠")
+st.title("👠 LuhVee Store - Catálogo Automático")
 
 # =========================
-# CARREGAR CSV DE PRODUTOS
+# FUNÇÃO BLINDADA CSV
 # =========================
+def carregar_csv(file):
+    encodings = ["utf-8", "latin1", "cp1252"]
+    seps = [",", ";", None]
 
+    for enc in encodings:
+        for sep in seps:
+            try:
+                return pd.read_csv(
+                    file,
+                    encoding=enc,
+                    sep=sep,
+                    engine="python"
+                )
+            except:
+                continue
+    return None
+
+# =========================
+# CARREGAR CSV PRINCIPAL
+# =========================
 st.subheader("👠 Catálogo de Produtos")
 
 try:
-    df = pd.read_csv("produtos.csv")
+    df = carregar_csv("produtos.csv")
 
-    st.success("Produtos carregados com sucesso 💖")
+    if df is not None:
+        st.success("Catálogo carregado 💖")
 
-    # mostrar tabela
-    st.dataframe(df, use_container_width=True)
+        st.dataframe(df, use_container_width=True)
 
-    # catálogo visual
-    for i, row in df.iterrows():
+        # catálogo visual
+        for _, row in df.iterrows():
+            st.markdown("---")
 
-        st.markdown("---")
+            col1, col2 = st.columns([1, 3])
 
-        col1, col2 = st.columns([1, 3])
+            with col1:
+                if "link" in df.columns:
+                    st.image(row.get("link", ""), width=120)
 
-        with col1:
-            if "link" in df.columns:
-                st.image(row["link"], width=120)
+            with col2:
+                st.markdown(f"### 👠 {row.get('nome','Sem nome')}")
+                st.markdown(f"💰 R$ {row.get('preco','')}")
+                st.markdown(f"📦 {row.get('categoria','')}")
 
-        with col2:
-            st.markdown(f"### 👠 {row['nome']}")
-            st.markdown(f"💰 Preço: R$ {row['preco']}")
-            st.markdown(f"📦 Categoria: {row['categoria']}")
+                whatsapp = "5511948021428"
+                msg = f"Quero esse produto: {row.get('nome','')}"
 
-            whatsapp = "5511948021428"
+                link = f"https://wa.me/{whatsapp}?text={msg}"
 
-            msg = f"Olá 💖 tenho interesse no produto: {row['nome']}"
+                st.markdown(f"[💬 Comprar no WhatsApp]({link})")
 
-            link_whats = f"https://wa.me/{whatsapp}?text={msg}"
-
-            st.markdown(f"[💬 Quero esse no WhatsApp]({link_whats})")
+    else:
+        st.error("❌ CSV não pôde ser lido. Verifique formato.")
 
 except Exception as e:
-    st.error("❌ Não foi possível carregar o produtos.csv")
+    st.error("Erro ao carregar produtos.csv")
     st.write(e)
 
 # =========================
-# UPLOAD CSV (backup)
+# UPLOAD BLINDADO
 # =========================
+st.subheader("📂 Upload de CSV")
 
-st.subheader("📂 Atualizar catálogo via CSV")
-
-upload = st.file_uploader("Envie seu produtos.csv", type=["csv"])
+upload = st.file_uploader("Envie sua planilha", type=["csv"])
 
 if upload is not None:
-    df_upload = pd.read_csv(upload)
-    st.dataframe(df_upload)
+    df_upload = carregar_csv(upload)
 
-    if st.button("Salvar atualização 💖"):
-        df_upload.to_csv("produtos.csv", index=False)
-        st.success("Catálogo atualizado com sucesso!")
+    if df_upload is not None:
+        st.dataframe(df_upload)
+
+        if st.button("Salvar catálogo 💖"):
+            df_upload.to_csv("produtos.csv", index=False)
+            st.success("Atualizado com sucesso!")
+    else:
+        st.error("❌ Não consegui ler esse CSV")
