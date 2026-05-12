@@ -1,87 +1,144 @@
 import streamlit as st
 import pandas as pd
 
-st.set_page_config(page_title="LuhVee Store 💖", layout="wide")
+st.set_page_config(page_title="LuhVee CRM PRO 💖", layout="wide")
 
-st.title("👠 LuhVee Store - Catálogo Automático")
-
-# =========================
-# FUNÇÃO BLINDADA CSV
-# =========================
-def carregar_csv(file):
-    encodings = ["utf-8", "latin1", "cp1252"]
-    seps = [",", ";", None]
-
-    for enc in encodings:
-        for sep in seps:
-            try:
-                return pd.read_csv(
-                    file,
-                    encoding=enc,
-                    sep=sep,
-                    engine="python"
-                )
-            except:
-                continue
-    return None
+st.title("💖 LuhVee CRM PRO")
 
 # =========================
-# CARREGAR CSV PRINCIPAL
+# FUNÇÃO LIMPEZA LEADS
 # =========================
-st.subheader("👠 Catálogo de Produtos")
 
-try:
-    df = carregar_csv("produtos.csv")
+def limpar_leads(df):
 
-    if df is not None:
-        st.success("Catálogo carregado 💖")
+    # renomear colunas manualmente
+    novas_colunas = [
+        "nome",
+        "extra1",
+        "tipo_rua",
+        "rua",
+        "numero",
+        "complemento",
+        "bairro",
+        "cidade",
+        "estado",
+        "codigo_ibge",
+        "cep",
+        "telefone",
+        "extra2",
+        "email",
+        "site"
+    ]
 
-        st.dataframe(df, use_container_width=True)
+    df.columns = novas_colunas
 
-        # catálogo visual
-        for _, row in df.iterrows():
-            st.markdown("---")
+    # remover colunas inúteis
+    df = df[[
+        "nome",
+        "telefone",
+        "email",
+        "cidade",
+        "estado",
+        "bairro",
+        "cep",
+        "site"
+    ]]
 
-            col1, col2 = st.columns([1, 3])
+    # limpar vazios
+    df = df.fillna("")
 
-            with col1:
-                if "link" in df.columns:
-                    st.image(row.get("link", ""), width=120)
-
-            with col2:
-                st.markdown(f"### 👠 {row.get('nome','Sem nome')}")
-                st.markdown(f"💰 R$ {row.get('preco','')}")
-                st.markdown(f"📦 {row.get('categoria','')}")
-
-                whatsapp = "5511948021428"
-                msg = f"Quero esse produto: {row.get('nome','')}"
-
-                link = f"https://wa.me/{whatsapp}?text={msg}"
-
-                st.markdown(f"[💬 Comprar no WhatsApp]({link})")
-
-    else:
-        st.error("❌ CSV não pôde ser lido. Verifique formato.")
-
-except Exception as e:
-    st.error("Erro ao carregar produtos.csv")
-    st.write(e)
+    return df
 
 # =========================
-# UPLOAD BLINDADO
+# IMPORTAÇÃO EXCEL
 # =========================
-st.subheader("📂 Upload de CSV")
 
-upload = st.file_uploader("Envie sua planilha", type=["csv"])
+st.subheader("📂 Importar Leads")
+
+upload = st.file_uploader(
+    "Envie Excel ou CSV",
+    type=["xlsx", "csv"]
+)
 
 if upload is not None:
-    df_upload = carregar_csv(upload)
 
-    if df_upload is not None:
-        st.dataframe(df_upload)
+    try:
 
-        if st.button("Salvar catálogo 💖"):
-            df_upload.to_csv("produtos.csv", index=False)
-            st.success("Atualizado com sucesso!")
-    else:
-        st.error("❌ Não consegui ler esse CSV")
+        # detectar formato
+        if upload.name.endswith("xlsx"):
+            df = pd.read_excel(upload)
+        else:
+            df = pd.read_csv(
+                upload,
+                encoding="latin1",
+                sep=None,
+                engine="python"
+            )
+
+        # limpar leads
+        leads = limpar_leads(df)
+
+        st.success("💖 Leads carregados com sucesso!")
+
+        # métricas
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.metric("Total Leads", len(leads))
+
+        with col2:
+            st.metric(
+                "Com Email",
+                leads["email"].astype(bool).sum()
+            )
+
+        with col3:
+            st.metric(
+                "Com Telefone",
+                leads["telefone"].astype(bool).sum()
+            )
+
+        # filtros
+        st.subheader("🔎 Filtrar Leads")
+
+        cidade = st.selectbox(
+            "Cidade",
+            ["Todas"] + sorted(leads["cidade"].unique().tolist())
+        )
+
+        if cidade != "Todas":
+            leads = leads[leads["cidade"] == cidade]
+
+        # tabela
+        st.dataframe(leads, use_container_width=True)
+
+        # download CSV limpo
+        csv = leads.to_csv(index=False).encode("utf-8")
+
+        st.download_button(
+            "⬇️ Baixar Leads Organizados",
+            csv,
+            "leads_luhvee.csv",
+            "text/csv"
+        )
+
+        # mensagens automáticas
+        st.subheader("💬 Mensagem Automática")
+
+        mensagem = """💖 Olá! Tudo bem?
+
+Vi que você gosta de novidades 👠✨
+
+A LuhVee Stores está com modelos lindos disponíveis hoje 💕
+
+Quer receber nosso catálogo?"""
+
+        st.text_area(
+            "Mensagem pronta",
+            mensagem,
+            height=180
+        )
+
+    except Exception as e:
+        st.error("Erro ao importar leads")
+        st.write(e)
