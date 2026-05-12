@@ -1,144 +1,214 @@
 import streamlit as st
 import pandas as pd
 
-st.set_page_config(page_title="LuhVee CRM PRO 💖", layout="wide")
+# =====================================
+# CONFIG
+# =====================================
 
-st.title("💖 LuhVee CRM PRO")
-
-# =========================
-# FUNÇÃO LIMPEZA LEADS
-# =========================
-
-def limpar_leads(df):
-
-    # renomear colunas manualmente
-    novas_colunas = [
-        "nome",
-        "extra1",
-        "tipo_rua",
-        "rua",
-        "numero",
-        "complemento",
-        "bairro",
-        "cidade",
-        "estado",
-        "codigo_ibge",
-        "cep",
-        "telefone",
-        "extra2",
-        "email",
-        "site"
-    ]
-
-    df.columns = novas_colunas
-
-    # remover colunas inúteis
-    df = df[[
-        "nome",
-        "telefone",
-        "email",
-        "cidade",
-        "estado",
-        "bairro",
-        "cep",
-        "site"
-    ]]
-
-    # limpar vazios
-    df = df.fillna("")
-
-    return df
-
-# =========================
-# IMPORTAÇÃO EXCEL
-# =========================
-
-st.subheader("📂 Importar Leads")
-
-upload = st.file_uploader(
-    "Envie Excel ou CSV",
-    type=["xlsx", "csv"]
+st.set_page_config(
+    page_title="LuhVee CRM PRO 💖",
+    layout="wide"
 )
 
-if upload is not None:
+# =====================================
+# VISUAL
+# =====================================
+
+st.title("💖 LuhVee CRM PRO")
+st.caption("CRM + Leads + Catálogo + WhatsApp Automático 👠")
+
+# =====================================
+# WHATSAPP
+# =====================================
+
+WHATSAPP = "5511948021428"
+
+# =====================================
+# FUNÇÃO LEITURA
+# =====================================
+
+@st.cache_data
+
+def carregar_arquivo(nome):
+
+    encodings = ["utf-8", "latin1", "cp1252"]
+
+    for enc in encodings:
+        try:
+            if nome.endswith(".csv"):
+                return pd.read_csv(
+                    nome,
+                    encoding=enc,
+                    sep=None,
+                    engine="python"
+                )
+            else:
+                return pd.read_excel(nome)
+        except:
+            continue
+
+    return None
+
+# =====================================
+# MENU
+# =====================================
+
+menu = st.sidebar.radio(
+    "💖 Menu",
+    [
+        "Dashboard",
+        "Leads",
+        "Catálogo",
+        "Campanhas",
+        "WhatsApp"
+    ]
+)
+
+# =====================================
+# DASHBOARD
+# =====================================
+
+if menu == "Dashboard":
+
+    st.subheader("📊 Painel Geral")
+
+    try:
+        leads = carregar_arquivo("brasi.xlsx")
+
+        total_leads = len(leads)
+
+    except:
+        total_leads = 0
+
+    try:
+        produtos = carregar_arquivo("produtos.csv")
+
+        total_produtos = len(produtos)
+
+    except:
+        total_produtos = 0
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.metric("👥 Leads", total_leads)
+
+    with col2:
+        st.metric("👠 Produtos", total_produtos)
+
+    st.success("💖 Sistema funcionando!")
+
+# =====================================
+# LEADS
+# =====================================
+
+if menu == "Leads":
+
+    st.subheader("👥 Base de Leads")
 
     try:
 
-        # detectar formato
-        if upload.name.endswith("xlsx"):
-            df = pd.read_excel(upload)
-        else:
-            df = pd.read_csv(
-                upload,
-                encoding="latin1",
-                sep=None,
-                engine="python"
-            )
+        leads = carregar_arquivo("brasi.xlsx")
 
-        # limpar leads
-        leads = limpar_leads(df)
+        st.success("💖 Leads carregados")
 
-        st.success("💖 Leads carregados com sucesso!")
-
-        # métricas
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            st.metric("Total Leads", len(leads))
-
-        with col2:
-            st.metric(
-                "Com Email",
-                leads["email"].astype(bool).sum()
-            )
-
-        with col3:
-            st.metric(
-                "Com Telefone",
-                leads["telefone"].astype(bool).sum()
-            )
-
-        # filtros
-        st.subheader("🔎 Filtrar Leads")
-
-        cidade = st.selectbox(
-            "Cidade",
-            ["Todas"] + sorted(leads["cidade"].unique().tolist())
-        )
-
-        if cidade != "Todas":
-            leads = leads[leads["cidade"] == cidade]
-
-        # tabela
         st.dataframe(leads, use_container_width=True)
 
-        # download CSV limpo
         csv = leads.to_csv(index=False).encode("utf-8")
 
         st.download_button(
-            "⬇️ Baixar Leads Organizados",
+            "⬇️ Baixar Leads",
             csv,
             "leads_luhvee.csv",
             "text/csv"
         )
 
-        # mensagens automáticas
-        st.subheader("💬 Mensagem Automática")
+    except Exception as e:
+        st.error("❌ Não encontrei brasi.xlsx")
+        st.write(e)
 
-        mensagem = """💖 Olá! Tudo bem?
+# =====================================
+# CATÁLOGO
+# =====================================
 
-Vi que você gosta de novidades 👠✨
+if menu == "Catálogo":
 
-A LuhVee Stores está com modelos lindos disponíveis hoje 💕
+    st.subheader("👠 Catálogo LuhVee")
 
-Quer receber nosso catálogo?"""
+    try:
 
-        st.text_area(
-            "Mensagem pronta",
-            mensagem,
-            height=180
-        )
+        produtos = carregar_arquivo("produtos.csv")
+
+        st.success("💖 Catálogo carregado")
+
+        st.dataframe(produtos, use_container_width=True)
+
+        for _, row in produtos.iterrows():
+
+            st.markdown("---")
+
+            col1, col2 = st.columns([1,3])
+
+            with col1:
+
+                if "link" in produtos.columns:
+                    st.image(row.get("link", ""), width=130)
+
+            with col2:
+
+                nome = row.get("nome", "Produto")
+                preco = row.get("preco", "")
+                categoria = row.get("categoria", "")
+
+                st.markdown(f"### 👠 {nome}")
+                st.write(f"💰 R$ {preco}")
+                st.write(f"📦 {categoria}")
+
+                mensagem = f'''💖 Olá!\n\nTenho interesse neste produto:\n\n👠 {nome}\n💰 R$ {preco}\n\nPode me enviar mais detalhes?'''
+
+                link = f"https://wa.me/{WHATSAPP}?text={mensagem}"
+
+                st.markdown(f"[💬 Comprar Agora]({link})")
 
     except Exception as e:
-        st.error("Erro ao importar leads")
+        st.error("❌ produtos.csv não encontrado")
         st.write(e)
+
+# =====================================
+# CAMPANHAS
+# =====================================
+
+if menu == "Campanhas":
+
+    st.subheader("📢 Campanhas Prontas")
+
+    mensagem1 = """💖 Olá! Tudo bem?\n\nA LuhVee Stores acabou de receber novidades incríveis 👠✨\n\nTemos modelos lindos com preços especiais hoje 💕\n\nQuer receber o catálogo?"""
+
+    mensagem2 = """🔥 PROMOÇÃO LUHVEE STORES 🔥\n\nSapatos incríveis com preços especiais 👠💕\n\nMe chama agora e garanta o seu antes que acabe ✨"""
+
+    mensagem3 = """💖 Novidades chegando na LuhVee Stores 👠✨\n\nSelecionamos modelos perfeitos pra você!\n\nQuer ver as novidades disponíveis hoje?"""
+
+    st.text_area("💬 Campanha 1", mensagem1, height=180)
+
+    st.text_area("💬 Campanha 2", mensagem2, height=180)
+
+    st.text_area("💬 Campanha 3", mensagem3, height=180)
+
+# =====================================
+# WHATSAPP
+# =====================================
+
+if menu == "WhatsApp":
+
+    st.subheader("💬 Central WhatsApp")
+
+    mensagem = st.text_area(
+        "Mensagem",
+        "💖 Olá! Conheça as novidades da LuhVee Stores 👠✨"
+    )
+
+    link = f"https://wa.me/{WHATSAPP}?text={mensagem}"
+
+    st.markdown(f"[🚀 Abrir WhatsApp]({link})")
+
+    st.info("💡 Use campanhas menores para evitar bloqueios no WhatsApp.")
