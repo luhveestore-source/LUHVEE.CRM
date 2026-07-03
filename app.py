@@ -3,6 +3,7 @@ import pandas as pd
 import os
 import re
 import urllib.parse
+from io import StringIO
 from datetime import datetime
 
 # ==========================================================
@@ -19,7 +20,8 @@ WHATSAPP_LOJA = "5511948021428"
 ARQUIVO_BASE = "crm_luhvee_base.csv"
 ARQUIVO_ANTIGO = "brasi.xlsx"
 ARQUIVO_SP = "sp.xlsx"
-ARQUIVO_PRODUTOS = "produtos.csv"
+ARQUIVO_ESTOQUE = "estoque_base.xlsx"
+ARQUIVO_PRODUTOS_CSV = "produtos.csv"
 
 STATUS_OPCOES = [
     "Novo",
@@ -45,10 +47,11 @@ TIPO_CLIENTE_OPCOES = [
 # ==========================================================
 
 st.title("💖 LuhVee CRM PRO")
-st.caption("CRM + Leads + Prospecção + Catálogo + Mensagens WhatsApp/E-mail ✨")
+st.caption("CRM + Leads + Estoque + Catálogo + WhatsApp/E-mail Automático ✨")
+
 
 # ==========================================================
-# FUNÇÕES AUXILIARES
+# FUNÇÕES GERAIS
 # ==========================================================
 
 def limpar_texto(valor):
@@ -70,27 +73,47 @@ def formatar_telefone(valor):
     if not tel:
         return ""
 
-    # Remove zeros no começo
     tel = tel.lstrip("0")
 
-    # Se vier sem DDI e tiver 10 ou 11 dígitos, adiciona 55
     if len(tel) in [10, 11]:
         tel = "55" + tel
 
     return tel
 
 
+def converter_numero(valor):
+    valor = limpar_texto(valor)
+
+    if not valor:
+        return 0.0
+
+    valor = valor.replace("R$", "").replace(" ", "")
+
+    # Formato brasileiro: 1.234,56
+    if "," in valor:
+        valor = valor.replace(".", "").replace(",", ".")
+
+    try:
+        return float(valor)
+    except Exception:
+        return 0.0
+
+
+def moeda(valor):
+    valor = converter_numero(valor)
+    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
 def primeiro_nome(nome):
     nome = limpar_texto(nome)
     if not nome:
         return "tudo bem"
+
     partes = nome.split()
-    if len(partes) <= 1:
-        return nome.title()
-    # Em bases compradas pode vir CPF/CNPJ ou código no começo.
     for parte in partes:
         if not any(char.isdigit() for char in parte) and len(parte) > 2:
             return parte.title()
+
     return partes[0].title()
 
 
@@ -98,7 +121,6 @@ def detectar_tipo_cliente(nome, documento=""):
     texto = f"{limpar_texto(nome)} {limpar_texto(documento)}".upper()
     numeros = somente_numeros(texto)
 
-    # CNPJ tem 14 dígitos; CPF tem 11.
     if len(numeros) >= 14:
         return "MEI/CNPJ"
 
@@ -130,17 +152,20 @@ def carregar_arquivo(nome):
     return None
 
 
+# ==========================================================
+# LEADS
+# ==========================================================
+
 def padronizar_sp(df):
     """
     Padroniza a planilha sp.xlsx.
-    A planilha veio sem cabeçalho correto, então usamos posição das colunas.
+    A planilha veio sem cabeçalho correto, então usamos a posição das colunas.
     """
     if df is None or df.empty:
         return pd.DataFrame()
 
     df = df.copy()
 
-    # Se a primeira linha virou cabeçalho por engano, recuperamos o cabeçalho como linha.
     primeira_linha = pd.DataFrame([list(df.columns)], columns=df.columns)
     df = pd.concat([primeira_linha, df], ignore_index=True)
 
@@ -173,16 +198,12 @@ def padronizar_sp(df):
     base["Último Contato"] = ""
     base["Data Cadastro"] = datetime.now().strftime("%d/%m/%Y")
 
-    # Remove linhas completamente vazias
     base = base[base["Nome"].str.strip() != ""]
 
     return base
 
 
 def padronizar_generico(df, origem="Base antiga"):
-    """
-    Tenta padronizar qualquer planilha com nomes de colunas variados.
-    """
     if df is None or df.empty:
         return pd.DataFrame()
 
@@ -242,14 +263,13 @@ def remover_duplicados(df):
 
     df = df.copy()
 
-    for coluna in ["Telefone", "Email", "Nome"]:
+    for coluna in ["Telefone", "Email", "Nome", "Cidade"]:
         if coluna not in df.columns:
             df[coluna] = ""
 
     df["Telefone"] = df["Telefone"].apply(formatar_telefone)
     df["Email"] = df["Email"].apply(lambda x: limpar_texto(x).lower())
 
-    # Chave de duplicidade: telefone primeiro, depois e-mail, depois nome+cidade.
     df["chave_temp"] = df.apply(
         lambda r: r["Telefone"]
         if r["Telefone"]
@@ -308,56 +328,195 @@ def salvar_base_crm(df):
     df.to_csv(ARQUIVO_BASE, index=False, encoding="utf-8-sig")
 
 
-def gerar_msg_whatsapp(row, tom="acolhedora"):
+# ==========================================================
+# ESTOQUE / CATÁLOGO
+# ==========================================================
+
+def carregar_produtos():
+    """
+    Carrega estoque_base.xlsx ou produtos.csv.
+    A planilha estoque_base.xlsx pode vir em uma única coluna separada por vírgulas.
+    O sistema mostra para o cliente somente: Produto, Categoria, Preço Venda e Estoque.
+    """
+    df = None
+
+    if os.path.exists(ARQUIVO_ESTOQUE):
+        df = carregar_arquivo(ARQUIVO_ESTOQUE)
+
+        if df is not None and not df.empty and len(df.columns) == 1:
+            coluna_unica = df.columns[0]
+            linhas = [str(coluna_unica)]
+            linhas += df[coluna_unica].dropna().astype(str).tolist()
+            texto = "\n".join(linhas)
+            df = pd.read_csv(StringIO(texto), sep=",", engine="python")
+
+    elif os.path.exists(ARQUIVO_PRODUTOS_CSV):
+        df = carregar_arquivo(ARQUIVO_PRODUTOS_CSV)
+
+    if df is None or df.empty:
+        return pd.DataFrame(columns=[
+            "Código", "Produto", "Categoria", "Fornecedor",
+            "Custo", "Preço Venda", "Estoque", "Disponível"
+        ])
+
+    renomear = {}
+
+    for c in df.columns:
+        c_original = c
+        c_limpo = str(c).strip().upper()
+        c_limpo = (
+            c_limpo
+            .replace("CÃ“DIGO", "CÓDIGO")
+            .replace("PREÃ‡O", "PREÇO")
+            .replace("CÃ‡", "Ç")
+        )
+
+        if "CODIGO" in c_limpo or "CÓDIGO" in c_limpo or c_limpo == "COD":
+            renomear[c_original] = "Código"
+        elif "PRODUTO" in c_limpo or "NOME" in c_limpo:
+            renomear[c_original] = "Produto"
+        elif "CATEGORIA" in c_limpo:
+            renomear[c_original] = "Categoria"
+        elif "FORNECEDOR" in c_limpo:
+            renomear[c_original] = "Fornecedor"
+        elif "CUSTO" in c_limpo:
+            renomear[c_original] = "Custo"
+        elif "PRECO" in c_limpo or "PREÇO" in c_limpo or "VENDA" in c_limpo or "VALOR" in c_limpo:
+            renomear[c_original] = "Preço Venda"
+        elif "ESTOQUE" in c_limpo or "QTD" in c_limpo or "QUANTIDADE" in c_limpo:
+            renomear[c_original] = "Estoque"
+        elif "CATEGORIA" in c_limpo:
+            renomear[c_original] = "Categoria"
+
+    df = df.rename(columns=renomear)
+
+    for coluna in ["Código", "Produto", "Categoria", "Fornecedor", "Custo", "Preço Venda", "Estoque"]:
+        if coluna not in df.columns:
+            df[coluna] = ""
+
+    df["Produto"] = df["Produto"].apply(limpar_texto)
+    df["Categoria"] = df["Categoria"].apply(limpar_texto)
+    df["Preço Venda"] = df["Preço Venda"].apply(converter_numero)
+    df["Estoque"] = df["Estoque"].apply(converter_numero)
+    df["Disponível"] = df["Estoque"].apply(lambda x: "Sim" if x > 0 else "Não")
+
+    df = df[df["Produto"] != ""].copy()
+
+    return df
+
+
+def catalogo_para_cliente(produtos, categoria="Todas", limite=12):
+    if produtos is None or produtos.empty:
+        return "No momento estou organizando o catálogo da LuhVee Stores ❤️"
+
+    df = produtos.copy()
+
+    if categoria != "Todas":
+        df = df[df["Categoria"] == categoria]
+
+    df = df[df["Estoque"] > 0]
+
+    if df.empty:
+        return "No momento não encontrei produtos disponíveis nessa categoria."
+
+    linhas = []
+    for _, p in df.head(limite).iterrows():
+        nome = limpar_texto(p.get("Produto", "Produto"))
+        preco = moeda(p.get("Preço Venda", 0))
+        categoria_produto = limpar_texto(p.get("Categoria", ""))
+
+        if categoria_produto:
+            linhas.append(f"✨ {nome} | {categoria_produto} | {preco}")
+        else:
+            linhas.append(f"✨ {nome} | {preco}")
+
+    return "\n".join(linhas)
+
+
+# ==========================================================
+# MENSAGENS
+# ==========================================================
+
+def gerar_msg_whatsapp(row, produtos=None, categoria="Todas", tom="acolhedora", incluir_produtos=True):
     nome = primeiro_nome(row.get("Nome", ""))
     tipo = row.get("Tipo Cliente", "Pessoa Física")
 
-    if tom == "curta":
-        return f"""Oi, {nome}! Tudo bem? 💖
-
-Sou da LuhVee Stores ❤️
-Trabalhamos com perfumes árabes originais, cosméticos, body splash, hidratantes, kits para presente e achadinhos selecionados.
-
-Posso te enviar nosso catálogo com as novidades?"""
+    lista_produtos = ""
+    if incluir_produtos and produtos is not None and not produtos.empty:
+        lista_produtos = catalogo_para_cliente(produtos, categoria=categoria, limite=8)
 
     if tipo == "MEI/CNPJ":
-        return f"""Olá, {nome}! Tudo bem? 💖
+        mensagem = f"""Olá, {nome}! Tudo bem? 💖
 
 Sou da LuhVee Stores ❤️
-Trabalhamos com curadoria de produtos para beleza, autocuidado, presentes, perfumes árabes originais, cosméticos, body splash e kits especiais.
+Trabalhamos com produtos à pronta entrega para autocuidado, presentes, perfumes árabes originais, cosméticos, body splash, hidratantes e kits especiais.
 
-Gostaria de apresentar algumas opções que podem ser interessantes para você, sua empresa ou para presentear clientes e colaboradores.
-
-Posso te enviar nosso catálogo com as novidades?"""
-
-    return f"""Oi, {nome}! Tudo bem? 💖
+Gostaria de apresentar algumas opções que podem ser interessantes para você, sua empresa ou para presentear clientes e colaboradores."""
+    else:
+        mensagem = f"""Oi, {nome}! Tudo bem? 💖
 
 Sou da LuhVee Stores ❤️
 Uma loja feita com carinho para quem ama se cuidar, presentear e encontrar achadinhos especiais.
 
-Temos perfumes árabes originais, cosméticos, body splash, hidratantes, kits para presente e diversos produtos selecionados com muito cuidado.
+Temos produtos à pronta entrega, perfumes árabes originais, cosméticos, body splash, hidratantes, kits e diversos produtos selecionados com cuidado."""
+
+    if incluir_produtos and lista_produtos:
+        mensagem += f"""
+
+Separei algumas opções disponíveis hoje:
+
+{lista_produtos}
+
+Quer que eu te envie mais detalhes ou fotos dos produtos?"""
+    else:
+        mensagem += """
 
 Posso te enviar nosso catálogo com as novidades disponíveis?"""
 
+    if tom == "curta":
+        mensagem = f"""Oi, {nome}! Tudo bem? 💖
 
-def gerar_msg_email(row):
+Sou da LuhVee Stores ❤️
+Temos produtos à pronta entrega: perfumes árabes originais, cosméticos, body splash, hidratantes, kits e achadinhos especiais.
+
+Posso te enviar o catálogo?"""
+
+    return mensagem
+
+
+def gerar_msg_email(row, produtos=None, categoria="Todas", incluir_produtos=True):
     nome = primeiro_nome(row.get("Nome", ""))
 
-    return f"""Olá, {nome}! Tudo bem?
+    lista_produtos = ""
+    if incluir_produtos and produtos is not None and not produtos.empty:
+        lista_produtos = catalogo_para_cliente(produtos, categoria=categoria, limite=10)
+
+    mensagem = f"""Olá, {nome}! Tudo bem?
 
 Prazer, somos a LuhVee Stores ❤️
 
 A LuhVee Stores é uma loja criada com carinho para oferecer produtos selecionados para autocuidado, presentes e achadinhos especiais.
 
-Temos perfumes árabes originais, cosméticos, body splash, hidratantes, kits para presente e diversos produtos para quem ama se cuidar ou surpreender alguém especial.
+Temos produtos à pronta entrega, perfumes árabes originais, cosméticos, body splash, hidratantes, kits para presente e diversos produtos para quem ama se cuidar ou surpreender alguém especial."""
+
+    if incluir_produtos and lista_produtos:
+        mensagem += f"""
+
+Algumas opções disponíveis hoje:
+
+{lista_produtos}"""
+
+    mensagem += f"""
 
 Será um prazer te apresentar nossas novidades e opções disponíveis.
 
-Caso queira receber nosso catálogo, é só responder este e-mail ou chamar no WhatsApp:
+Caso queira receber nosso catálogo completo, é só responder este e-mail ou chamar no WhatsApp:
 https://wa.me/{WHATSAPP_LOJA}
 
 Com carinho,
 LuhVee Stores ❤️"""
+
+    return mensagem
 
 
 def gerar_link_whatsapp(telefone, mensagem):
@@ -382,7 +541,8 @@ def aplicar_filtros(df):
         status = st.selectbox("Status", ["Todos"] + STATUS_OPCOES)
 
     with col3:
-        origem = st.selectbox("Origem", ["Todas"] + sorted(filtrado["Origem"].dropna().unique().tolist()))
+        origens = sorted(filtrado["Origem"].dropna().unique().tolist()) if "Origem" in filtrado.columns else []
+        origem = st.selectbox("Origem", ["Todas"] + origens)
 
     with col4:
         busca = st.text_input("Buscar por nome, telefone, e-mail ou bairro")
@@ -403,6 +563,7 @@ def aplicar_filtros(df):
 
     return filtrado
 
+
 # ==========================================================
 # MENU
 # ==========================================================
@@ -421,6 +582,7 @@ menu = st.sidebar.radio(
     ]
 )
 
+
 # ==========================================================
 # DASHBOARD
 # ==========================================================
@@ -429,39 +591,38 @@ if menu == "Dashboard":
     st.subheader("📊 Painel Geral")
 
     leads = carregar_base_crm()
+    produtos = carregar_produtos()
 
     total_leads = len(leads)
-    pf = len(leads[leads["Tipo Cliente"] == "Pessoa Física"])
-    pj = len(leads[leads["Tipo Cliente"] == "MEI/CNPJ"])
+    pf = len(leads[leads["Tipo Cliente"] == "Pessoa Física"]) if not leads.empty else 0
+    pj = len(leads[leads["Tipo Cliente"] == "MEI/CNPJ"]) if not leads.empty else 0
+    total_produtos = len(produtos)
+    produtos_disponiveis = len(produtos[produtos["Estoque"] > 0]) if not produtos.empty else 0
 
-    try:
-        produtos = carregar_arquivo(ARQUIVO_PRODUTOS)
-        total_produtos = len(produtos) if produtos is not None else 0
-    except Exception:
-        total_produtos = 0
-
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
 
     col1.metric("👥 Total Leads", total_leads)
     col2.metric("🙋 Pessoa Física", pf)
     col3.metric("🏢 MEI/CNPJ", pj)
-    col4.metric("👠 Produtos", total_produtos)
+    col4.metric("🛍️ Produtos", total_produtos)
+    col5.metric("✅ À pronta entrega", produtos_disponiveis)
 
     st.markdown("---")
 
-    col5, col6 = st.columns(2)
+    col6, col7 = st.columns(2)
 
-    with col5:
+    with col6:
         st.subheader("Status dos Leads")
         if not leads.empty:
             st.bar_chart(leads["Status"].value_counts())
 
-    with col6:
-        st.subheader("Origem dos Leads")
-        if not leads.empty:
-            st.bar_chart(leads["Origem"].value_counts())
+    with col7:
+        st.subheader("Categorias em estoque")
+        if not produtos.empty:
+            st.bar_chart(produtos["Categoria"].value_counts())
 
-    st.info("💡 Dica LGPD: envie mensagens personalizadas, com identificação da loja e opção da pessoa pedir para não receber novos contatos.")
+    st.info("💡 Para prospecção, o cliente verá somente produto, categoria, preço de venda e disponibilidade. Custo e fornecedor ficam escondidos.")
+
 
 # ==========================================================
 # LEADS
@@ -495,6 +656,7 @@ if menu == "Leads":
             "crm_luhvee_base_completa.csv",
             "text/csv"
         )
+
 
 # ==========================================================
 # ADICIONAR / IMPORTAR
@@ -594,6 +756,7 @@ if menu == "Adicionar/Importar":
         st.success("Lead salvo com sucesso!")
         st.rerun()
 
+
 # ==========================================================
 # ATUALIZAR CONTATO
 # ==========================================================
@@ -626,7 +789,13 @@ if menu == "Atualizar Contato":
 
             with st.form("editar_lead"):
                 col1, col2, col3 = st.columns(3)
-                status = col1.selectbox("Status", STATUS_OPCOES, index=STATUS_OPCOES.index(leads.loc[idx, "Status"]) if leads.loc[idx, "Status"] in STATUS_OPCOES else 0)
+                status_atual = leads.loc[idx, "Status"] if leads.loc[idx, "Status"] in STATUS_OPCOES else "Novo"
+
+                status = col1.selectbox(
+                    "Status",
+                    STATUS_OPCOES,
+                    index=STATUS_OPCOES.index(status_atual)
+                )
                 interesse = col2.text_input("Interesse", leads.loc[idx, "Interesse"])
                 ultimo = col3.text_input("Último Contato", datetime.now().strftime("%d/%m/%Y"))
 
@@ -643,6 +812,7 @@ if menu == "Atualizar Contato":
                 st.success("Contato atualizado!")
                 st.rerun()
 
+
 # ==========================================================
 # MENSAGENS
 # ==========================================================
@@ -651,6 +821,7 @@ if menu == "Mensagens":
     st.subheader("💌 Gerador de mensagens por lead")
 
     leads = carregar_base_crm()
+    produtos = carregar_produtos()
 
     if leads.empty:
         st.warning("Nenhum lead cadastrado.")
@@ -660,91 +831,130 @@ if menu == "Mensagens":
         if filtrado.empty:
             st.warning("Nenhum lead encontrado nesse filtro.")
         else:
-            idx = st.selectbox(
-                "Escolha o lead",
-                filtrado.index.tolist(),
-                format_func=lambda i: f'{leads.loc[i, "Nome"]} | {leads.loc[i, "Telefone"]} | {leads.loc[i, "Email"]}'
-            )
+            categorias = ["Todas"]
+            if not produtos.empty:
+                categorias += sorted([c for c in produtos["Categoria"].dropna().unique().tolist() if limpar_texto(c)])
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                idx = st.selectbox(
+                    "Escolha o lead",
+                    filtrado.index.tolist(),
+                    format_func=lambda i: f'{leads.loc[i, "Nome"]} | {leads.loc[i, "Telefone"]} | {leads.loc[i, "Email"]}'
+                )
+
+            with col2:
+                categoria_msg = st.selectbox("Categoria para sugerir na mensagem", categorias)
 
             row = leads.loc[idx]
 
-            tom = st.radio("Modelo de WhatsApp", ["acolhedora", "curta"], horizontal=True)
+            col3, col4 = st.columns(2)
+            with col3:
+                tom = st.radio("Modelo de WhatsApp", ["acolhedora", "curta"], horizontal=True)
+            with col4:
+                incluir_produtos = st.checkbox("Incluir produtos com preço de venda", value=True)
 
-            msg_wpp = gerar_msg_whatsapp(row, tom)
-            msg_email = gerar_msg_email(row)
+            msg_wpp = gerar_msg_whatsapp(
+                row,
+                produtos=produtos,
+                categoria=categoria_msg,
+                tom=tom,
+                incluir_produtos=incluir_produtos
+            )
+
+            msg_email = gerar_msg_email(
+                row,
+                produtos=produtos,
+                categoria=categoria_msg,
+                incluir_produtos=incluir_produtos
+            )
 
             st.markdown("### WhatsApp")
-            msg_wpp_editada = st.text_area("Mensagem para WhatsApp", msg_wpp, height=230)
+            msg_wpp_editada = st.text_area("Mensagem para WhatsApp", msg_wpp, height=300)
 
             link = gerar_link_whatsapp(row.get("Telefone", ""), msg_wpp_editada)
             st.markdown(f"[🚀 Abrir WhatsApp do lead]({link})")
 
             st.markdown("### E-mail")
             assunto = "Conheça a LuhVee Stores ❤️"
-            st.text_input("Assunto", assunto)
-            st.text_area("Mensagem para e-mail", msg_email, height=300)
+            assunto_editado = st.text_input("Assunto", assunto)
+            msg_email_editada = st.text_area("Mensagem para e-mail", msg_email, height=360)
 
             email = limpar_texto(row.get("Email", ""))
             if email:
-                mailto = f"mailto:{email}?subject={urllib.parse.quote(assunto)}&body={urllib.parse.quote(msg_email)}"
+                mailto = f"mailto:{email}?subject={urllib.parse.quote(assunto_editado)}&body={urllib.parse.quote(msg_email_editada)}"
                 st.markdown(f"[📧 Abrir e-mail para o lead]({mailto})")
             else:
                 st.info("Esse lead não tem e-mail cadastrado.")
 
             st.warning("⚠️ Evite disparo em massa. Personalize a abordagem e respeite pedidos de remoção da lista.")
 
+
 # ==========================================================
 # CATÁLOGO
 # ==========================================================
 
 if menu == "Catálogo":
-    st.subheader("👠 Catálogo LuhVee")
+    st.subheader("🛍️ Catálogo à pronta entrega")
 
-    try:
-        produtos = carregar_arquivo(ARQUIVO_PRODUTOS)
+    produtos = carregar_produtos()
 
-        if produtos is None or produtos.empty:
-            st.warning("produtos.csv não encontrado ou vazio.")
-        else:
-            st.success("💖 Catálogo carregado")
-            st.dataframe(produtos, use_container_width=True)
+    if produtos.empty:
+        st.warning("Não encontrei estoque_base.xlsx nem produtos.csv na pasta do sistema.")
+    else:
+        categorias = ["Todas"] + sorted([c for c in produtos["Categoria"].dropna().unique().tolist() if limpar_texto(c)])
+        categoria = st.selectbox("Filtrar categoria", categorias)
 
-            for _, row in produtos.iterrows():
-                st.markdown("---")
-                col1, col2 = st.columns([1, 3])
+        busca = st.text_input("Buscar produto")
 
-                with col1:
-                    link_img = row.get("link", "") if "link" in produtos.columns else ""
-                    if link_img:
-                        try:
-                            st.image(link_img, width=130)
-                        except Exception:
-                            st.write("Sem imagem")
+        visivel = produtos.copy()
 
-                with col2:
-                    nome = row.get("nome", "Produto")
-                    preco = row.get("preco", "")
-                    categoria = row.get("categoria", "")
+        if categoria != "Todas":
+            visivel = visivel[visivel["Categoria"] == categoria]
 
-                    st.markdown(f"### 💖 {nome}")
-                    st.write(f"💰 R$ {preco}")
-                    st.write(f"📦 {categoria}")
+        if busca:
+            busca_lower = busca.lower()
+            texto = visivel.astype(str).agg(" ".join, axis=1).str.lower()
+            visivel = visivel[texto.str.contains(busca_lower, na=False)]
 
-                    mensagem = f"""💖 Olá!
+        col1, col2 = st.columns(2)
+        col1.metric("Produtos encontrados", len(visivel))
+        col2.metric("À pronta entrega", len(visivel[visivel["Estoque"] > 0]))
 
-Tenho interesse neste produto da LuhVee Stores:
+        st.markdown("### Visão para cliente")
+        tabela_cliente = visivel[["Produto", "Categoria", "Preço Venda", "Estoque", "Disponível"]].copy()
+        tabela_cliente["Preço Venda"] = tabela_cliente["Preço Venda"].apply(moeda)
+        tabela_cliente["Estoque"] = tabela_cliente["Estoque"].astype(int, errors="ignore")
+        st.dataframe(tabela_cliente, use_container_width=True, height=420)
 
-✨ {nome}
-💰 R$ {preco}
+        st.download_button(
+            "⬇️ Baixar Catálogo para Cliente",
+            tabela_cliente.to_csv(index=False).encode("utf-8-sig"),
+            "catalogo_cliente_luhvee.csv",
+            "text/csv"
+        )
 
-Pode me enviar mais detalhes?"""
+        st.markdown("---")
+        st.markdown("### Mensagem de catálogo por WhatsApp")
 
-                    link = f"https://wa.me/{WHATSAPP_LOJA}?text={urllib.parse.quote(mensagem)}"
-                    st.markdown(f"[💬 Comprar Agora]({link})")
+        categoria_msg = st.selectbox("Categoria da mensagem", categorias, key="categoria_catalogo_msg")
+        mensagem_catalogo = f"""💖 Catálogo LuhVee Stores ❤️
 
-    except Exception as e:
-        st.error("❌ Erro ao carregar catálogo")
-        st.write(e)
+Produtos à pronta entrega selecionados com carinho:
+
+{catalogo_para_cliente(produtos, categoria=categoria_msg, limite=15)}
+
+Me chama para reservar o seu ou pedir mais fotos ✨"""
+
+        msg_editada = st.text_area("Mensagem pronta", mensagem_catalogo, height=320)
+        link = f"https://wa.me/{WHATSAPP_LOJA}?text={urllib.parse.quote(msg_editada)}"
+        st.markdown(f"[🚀 Enviar pelo WhatsApp da loja]({link})")
+
+        with st.expander("Controle interno"):
+            st.info("Aqui você pode visualizar dados internos. Eles não aparecem nas mensagens para clientes.")
+            st.dataframe(produtos, use_container_width=True, height=300)
+
 
 # ==========================================================
 # CAMPANHAS
@@ -753,21 +963,32 @@ Pode me enviar mais detalhes?"""
 if menu == "Campanhas":
     st.subheader("📢 Campanhas prontas")
 
-    mensagem1 = """💖 Olá! Tudo bem?
+    produtos = carregar_produtos()
+    categorias = ["Todas"]
+    if not produtos.empty:
+        categorias += sorted([c for c in produtos["Categoria"].dropna().unique().tolist() if limpar_texto(c)])
+
+    categoria_campanha = st.selectbox("Categoria para campanha", categorias)
+
+    mensagem1 = f"""💖 Olá! Tudo bem?
 
 A LuhVee Stores preparou novidades especiais para quem ama se cuidar e presentear ✨
 
-Temos perfumes árabes originais, cosméticos, body splash, hidratantes, kits e achadinhos selecionados com carinho.
+Temos produtos à pronta entrega selecionados com carinho.
 
-Quer receber nosso catálogo?"""
+{catalogo_para_cliente(produtos, categoria=categoria_campanha, limite=8)}
 
-    mensagem2 = """✨ Novidades LuhVee Stores ❤️
+Quer receber fotos e mais detalhes?"""
+
+    mensagem2 = f"""✨ Novidades LuhVee Stores ❤️
 
 Produtos para autocuidado, presentes e aquele mimo especial do dia a dia.
 
-Perfumes árabes originais, cosméticos, body splash, hidratantes e muito mais.
+Opções disponíveis hoje:
 
-Me chama que eu te envio as opções disponíveis 💖"""
+{catalogo_para_cliente(produtos, categoria=categoria_campanha, limite=8)}
+
+Me chama que eu te envio mais informações 💖"""
 
     mensagem3 = """💖 Presenteie com carinho!
 
@@ -783,10 +1004,11 @@ Estou entrando em contato para apresentar nossos produtos de autocuidado, presen
 
 Caso não queira receber novas mensagens, é só me avisar que removo seu contato da nossa lista. 💖"""
 
-    st.text_area("💬 Campanha 1 - Apresentação", mensagem1, height=180)
-    st.text_area("💬 Campanha 2 - Novidades", mensagem2, height=180)
+    st.text_area("💬 Campanha 1 - Apresentação com produtos", mensagem1, height=260)
+    st.text_area("💬 Campanha 2 - Novidades com produtos", mensagem2, height=260)
     st.text_area("💬 Campanha 3 - Kits e presentes", mensagem3, height=180)
     st.text_area("💬 Rodapé opcional LGPD", mensagem_lgpd, height=150)
+
 
 # ==========================================================
 # WHATSAPP
@@ -795,10 +1017,22 @@ Caso não queira receber novas mensagens, é só me avisar que removo seu contat
 if menu == "WhatsApp":
     st.subheader("💬 Central WhatsApp")
 
-    mensagem = st.text_area(
-        "Mensagem",
-        "💖 Olá! Conheça as novidades da LuhVee Stores ❤️\n\nTemos perfumes árabes originais, cosméticos, body splash, kits e achadinhos especiais."
-    )
+    produtos = carregar_produtos()
+    categorias = ["Todas"]
+    if not produtos.empty:
+        categorias += sorted([c for c in produtos["Categoria"].dropna().unique().tolist() if limpar_texto(c)])
+
+    categoria = st.selectbox("Categoria para enviar", categorias)
+
+    mensagem_padrao = f"""💖 Olá! Conheça as novidades da LuhVee Stores ❤️
+
+Produtos à pronta entrega:
+
+{catalogo_para_cliente(produtos, categoria=categoria, limite=12)}
+
+Me chama para reservar o seu ✨"""
+
+    mensagem = st.text_area("Mensagem", mensagem_padrao, height=320)
 
     link = f"https://wa.me/{WHATSAPP_LOJA}?text={urllib.parse.quote(mensagem)}"
     st.markdown(f"[🚀 Abrir WhatsApp da loja]({link})")
