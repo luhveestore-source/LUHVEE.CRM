@@ -629,31 +629,66 @@ if menu == "Dashboard":
 # ==========================================================
 
 if menu == "Leads":
-    st.subheader("👥 Base de Leads")
+    st.subheader("🔎 Busca de Clientes")
+    st.caption("Pesquisa simplificada mostrando somente nome, telefone e estado.")
 
     leads = carregar_base_crm()
 
     if leads.empty:
         st.warning("Nenhum lead encontrado ainda.")
     else:
-        filtrado = aplicar_filtros(leads)
+        for coluna in ["Nome", "Telefone", "UF"]:
+            if coluna not in leads.columns:
+                leads[coluna] = ""
 
-        st.success(f"💖 {len(filtrado)} leads encontrados")
+        col1, col2 = st.columns([2, 1])
 
-        st.dataframe(filtrado, use_container_width=True, height=520)
+        with col1:
+            busca = st.text_input(
+                "Buscar por nome ou telefone",
+                placeholder="Digite o nome ou o telefone do cliente"
+            )
 
-        csv = filtrado.to_csv(index=False).encode("utf-8-sig")
-        st.download_button(
-            "⬇️ Baixar Leads Filtrados",
-            csv,
-            "leads_luhvee_filtrados.csv",
-            "text/csv"
+        estados = sorted([
+            uf for uf in leads["UF"].fillna("").astype(str).str.strip().unique().tolist()
+            if uf
+        ])
+
+        with col2:
+            estado = st.selectbox("Estado", ["Todos"] + estados)
+
+        resultado = leads.copy()
+
+        if busca:
+            termo = busca.strip().lower()
+            nome_texto = resultado["Nome"].fillna("").astype(str).str.lower()
+            telefone_texto = resultado["Telefone"].fillna("").astype(str).str.lower()
+            resultado = resultado[
+                nome_texto.str.contains(termo, na=False, regex=False)
+                | telefone_texto.str.contains(termo, na=False, regex=False)
+            ]
+
+        if estado != "Todos":
+            resultado = resultado[
+                resultado["UF"].fillna("").astype(str).str.strip() == estado
+            ]
+
+        resultado_exibicao = resultado[["Nome", "Telefone", "UF"]].copy()
+        resultado_exibicao = resultado_exibicao.rename(columns={"UF": "Estado"})
+
+        st.success(f"💖 {len(resultado_exibicao)} clientes encontrados")
+        st.dataframe(
+            resultado_exibicao,
+            use_container_width=True,
+            height=520,
+            hide_index=True
         )
 
+        csv = resultado_exibicao.to_csv(index=False).encode("utf-8-sig")
         st.download_button(
-            "⬇️ Baixar Base Completa",
-            leads.to_csv(index=False).encode("utf-8-sig"),
-            "crm_luhvee_base_completa.csv",
+            "⬇️ Baixar resultado da busca",
+            csv,
+            "clientes_nome_telefone_estado.csv",
             "text/csv"
         )
 
@@ -882,9 +917,31 @@ if menu == "Mensagens":
             msg_email_editada = st.text_area("Mensagem para e-mail", msg_email, height=360)
 
             email = limpar_texto(row.get("Email", ""))
+
+            st.markdown("### Dados para copiar")
+            st.text_input("E-mail do lead", email if email else "Sem e-mail cadastrado")
+            st.text_input("Assunto para copiar", assunto_editado)
+            st.text_area("Mensagem para copiar e colar no e-mail", msg_email_editada, height=260, key="email_para_copiar")
+
             if email:
                 mailto = f"mailto:{email}?subject={urllib.parse.quote(assunto_editado)}&body={urllib.parse.quote(msg_email_editada)}"
-                st.markdown(f"[📧 Abrir e-mail para o lead]({mailto})")
+
+                gmail_url = (
+                    "https://mail.google.com/mail/?view=cm&fs=1"
+                    f"&to={urllib.parse.quote(email)}"
+                    f"&su={urllib.parse.quote(assunto_editado)}"
+                    f"&body={urllib.parse.quote(msg_email_editada)}"
+                )
+
+                col_email1, col_email2 = st.columns(2)
+
+                with col_email1:
+                    st.markdown(f"[📧 Abrir no aplicativo de e-mail]({mailto})")
+
+                with col_email2:
+                    st.markdown(f"[📩 Abrir no Gmail]({gmail_url})")
+
+                st.info("Se o botão do aplicativo de e-mail não abrir, use o botão 'Abrir no Gmail' ou copie os dados acima.")
             else:
                 st.info("Esse lead não tem e-mail cadastrado.")
 
