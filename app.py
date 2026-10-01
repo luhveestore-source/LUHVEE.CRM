@@ -391,96 +391,119 @@ def padronizar_leads_quentes(df, tipo_cliente):
 
 def carregar_arquivo_leads_quentes():
     """
-    Lê TODAS as abas do arquivo comprado como UMA ÚNICA BASE.
-    Conforme informado, todos os contatos desse arquivo são:
-    - Pessoa Física
-    - Leads Quentes
-    - São Paulo
+    LEADS QUENTES SP:
+    usa SOMENTE a aba 'Planilha1' do arquivo comprado.
 
-    Não existe separação PJ nesta base.
+    Essa é a aba correta com os dados de Pessoa Física:
+    Nome, Bairro, Cidade, UF, Telefone/WhatsApp e E-mail.
+
+    A aba 'Empresas' NÃO entra nos Leads Quentes PF.
+    O CRM não inventa nem substitui telefone: apenas remove caracteres
+    de formatação e adiciona DDI 55 quando o número brasileiro vier sem DDI.
     """
     if not os.path.exists(ARQUIVO_LEADS_QUENTES):
         return pd.DataFrame()
 
     try:
-        abas = pd.read_excel(
+        df = pd.read_excel(
             ARQUIVO_LEADS_QUENTES,
-            sheet_name=None,
+            sheet_name="Planilha1",
             dtype=str
-        )
+        ).fillna("")
     except Exception:
         return pd.DataFrame()
 
-    partes = []
-
-    for _, df in abas.items():
-        if df is None or df.empty:
-            continue
-
-        parte = padronizar_leads_quentes(df, "Pessoa Física")
-
-        if not parte.empty:
-            parte["Tipo Cliente"] = "Pessoa Física"
-            parte["Origem"] = "🔥 Leads Quentes — São Paulo"
-            parte["Temperatura"] = "🔥 Quente"
-            parte["UF"] = "SP"
-            partes.append(parte)
-
-    if not partes:
+    if df.empty:
         return pd.DataFrame()
 
-    quente = pd.concat(partes, ignore_index=True)
-    quente = remover_duplicados(quente)
+    # Mapeamento explícito da aba correta.
+    nome = serie_coluna(df, ["nome", "nome completo"])
+    bairro = serie_coluna(df, ["bairro"])
+    cidade = serie_coluna(df, ["cidade", "municipio", "município"])
+    uf = serie_coluna(df, ["uf", "estado"])
+    telefone_original = serie_coluna(
+        df,
+        ["telefone 1", "telefone", "whatsapp", "celular", "fone"]
+    )
+    email = serie_coluna(df, ["e-mail", "email"])
 
-    # Reforça a classificação após a deduplicação.
-    quente["Tipo Cliente"] = "Pessoa Física"
-    quente["Origem"] = "🔥 Leads Quentes — São Paulo"
-    quente["Temperatura"] = "🔥 Quente"
-    quente["UF"] = "SP"
+    base = pd.DataFrame(index=df.index)
+    base["Nome"] = nome.apply(limpar_texto)
+    base["Documento"] = ""
+    base["Tipo Cliente"] = "Pessoa Física"
+    base["Tipo Logradouro"] = ""
+    base["Endereço"] = ""
+    base["Número"] = ""
+    base["Complemento"] = ""
+    base["Bairro"] = bairro.apply(limpar_texto)
+    base["Cidade"] = cidade.apply(limpar_texto)
+    base["UF"] = uf.apply(lambda x: limpar_texto(x).upper() or "SP")
+    base["CEP"] = ""
 
-    return quente
+    # Preserva o número da planilha. A única transformação é deixá-lo
+    # em formato numérico próprio para WhatsApp.
+    base["Telefone"] = telefone_original.apply(formatar_telefone)
+
+    base["Email"] = email.apply(limpar_texto)
+    base["Site"] = ""
+    base["Origem"] = "🔥 Leads Quentes — São Paulo"
+    base["Temperatura"] = "🔥 Quente"
+    base["Status"] = "Novo"
+    base["Interesse"] = ""
+    base["Observações"] = ""
+    base["Último Contato"] = ""
+    base["Data Cadastro"] = datetime.now().strftime("%d/%m/%Y")
+
+    # Só mantém linhas que realmente possuem nome.
+    base = base[base["Nome"].astype(str).str.strip() != ""].copy()
+
+    # A lista é de São Paulo.
+    base.loc[base["UF"].astype(str).str.strip() == "", "UF"] = "SP"
+
+    # Remove apenas duplicidades reais por telefone/e-mail.
+    base = remover_duplicados(base)
+
+    # Reforça a classificação correta.
+    base["Tipo Cliente"] = "Pessoa Física"
+    base["Origem"] = "🔥 Leads Quentes — São Paulo"
+    base["Temperatura"] = "🔥 Quente"
+
+    return base
 
 def sincronizar_leads_quentes(base):
     """
-    Inclui os leads quentes na base do CRM sem duplicar contatos já existentes.
-    Preserva status/observações de quem já estiver cadastrado.
+    Substitui SOMENTE a antiga base de Leads Quentes pela Planilha1 correta.
+    Clientes antigos/normais permanecem intactos.
     """
-    quentes = carregar_arquivo_leads_quentes()
-
-    if quentes.empty:
-        return base
+    quentes_corretos = carregar_arquivo_leads_quentes()
 
     base = base.copy()
 
     if "Temperatura" not in base.columns:
         base["Temperatura"] = ""
 
-    # Se o contato já existe, marcamos como quente sem apagar o histórico.
-    telefones_quentes = set(
-        quentes["Telefone"].fillna("").astype(str).str.strip().tolist()
-    ) - {""}
-    emails_quentes = set(
-        quentes["Email"].fillna("").astype(str).str.strip().str.lower().tolist()
-    ) - {""}
+    if "Origem" not in base.columns:
+        base["Origem"] = ""
 
-    for idx, row in base.iterrows():
-        tel = limpar_texto(row.get("Telefone", ""))
-        email = limpar_texto(row.get("Email", "")).lower()
+    # Remove do CSV interno apenas os registros da importação quente anterior,
+    # que estavam vindo da aba errada. Não mexe nos demais clientes do CRM.
+    mascara_quentes_antigos = (
+        base["Origem"].fillna("").astype(str).str.contains(
+            "Leads Quentes", case=False, na=False
+        )
+        | base["Temperatura"].fillna("").astype(str).str.contains(
+            "Quente", case=False, na=False
+        )
+    )
 
-        if (tel and tel in telefones_quentes) or (email and email in emails_quentes):
-            base.at[idx, "Temperatura"] = "🔥 Quente"
-            base.at[idx, "Origem"] = "🔥 Leads Quentes — São Paulo"
-            base.at[idx, "Tipo Cliente"] = "Pessoa Física"
-            base.at[idx, "UF"] = "SP"
+    base_normal = base[~mascara_quentes_antigos].copy()
 
-    combinado = pd.concat([base, quentes], ignore_index=True)
-    combinado = remover_duplicados(combinado)
+    if quentes_corretos.empty:
+        return base_normal
 
-    if "Temperatura" not in combinado.columns:
-        combinado["Temperatura"] = ""
+    combinado = pd.concat([base_normal, quentes_corretos], ignore_index=True)
 
     return combinado
-
 
 def carregar_base_crm():
     if os.path.exists(ARQUIVO_BASE):
