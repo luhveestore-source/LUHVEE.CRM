@@ -22,6 +22,7 @@ ARQUIVO_ANTIGO = "brasi.xlsx"
 ARQUIVO_SP = "sp.xlsx"
 ARQUIVO_ESTOQUE = "estoque_base.xlsx"
 ARQUIVO_PRODUTOS_CSV = "produtos.csv"
+ARQUIVO_LEADS_QUENTES = "Cosméticos, maquiagens, hidratantes e perfumes árabes originais - masculinos e femininos.xlsx"
 
 STATUS_OPCOES = [
     "Novo",
@@ -312,16 +313,185 @@ def montar_base_inicial():
     return base
 
 
+
+def localizar_coluna(df, nomes):
+    """Localiza uma coluna mesmo quando o fornecedor usa nomes um pouco diferentes."""
+    mapa = {str(c).strip().lower(): c for c in df.columns}
+    for procurado in nomes:
+        procurado = procurado.lower()
+        for normalizado, original in mapa.items():
+            if procurado == normalizado or procurado in normalizado:
+                return original
+    return None
+
+
+def serie_coluna(df, nomes):
+    coluna = localizar_coluna(df, nomes)
+    if coluna is None:
+        return pd.Series([""] * len(df), index=df.index)
+    return df[coluna].apply(limpar_texto)
+
+
+def padronizar_leads_quentes(df, tipo_cliente):
+    """Converte as abas do arquivo comprado para o padrão do CRM."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    nome = serie_coluna(
+        df,
+        ["nome", "nome completo", "razao social", "razão social", "empresa", "fantasia"]
+    )
+    telefone = serie_coluna(
+        df,
+        ["whatsapp", "telefone", "celular", "fone"]
+    )
+    email = serie_coluna(df, ["e-mail", "email"])
+    cidade = serie_coluna(df, ["cidade", "municipio", "município"])
+    uf = serie_coluna(df, ["uf", "estado"])
+    bairro = serie_coluna(df, ["bairro"])
+    endereco = serie_coluna(df, ["endereco", "endereço", "logradouro", "rua"])
+    cep = serie_coluna(df, ["cep"])
+    documento = serie_coluna(df, ["cnpj", "cpf", "documento"])
+
+    base = pd.DataFrame(index=df.index)
+    base["Nome"] = nome
+    base["Documento"] = documento
+    base["Tipo Cliente"] = tipo_cliente
+    base["Tipo Logradouro"] = ""
+    base["Endereço"] = endereco
+    base["Número"] = ""
+    base["Complemento"] = ""
+    base["Bairro"] = bairro
+    base["Cidade"] = cidade
+    base["UF"] = uf.apply(lambda x: limpar_texto(x).upper())
+    base["CEP"] = cep
+    base["Telefone"] = telefone.apply(formatar_telefone)
+    base["Email"] = email
+    base["Site"] = ""
+    base["Origem"] = "🔥 Leads Quentes — São Paulo"
+    base["Temperatura"] = "🔥 Quente"
+    base["Status"] = "Novo"
+    base["Interesse"] = ""
+    base["Observações"] = ""
+    base["Último Contato"] = ""
+    base["Data Cadastro"] = datetime.now().strftime("%d/%m/%Y")
+
+    # A lista comprada foi informada como sendo exclusivamente de São Paulo.
+    base.loc[base["UF"].astype(str).str.strip() == "", "UF"] = "SP"
+
+    # Mantém registros com pelo menos nome ou telefone.
+    base = base[
+        (base["Nome"].astype(str).str.strip() != "")
+        | (base["Telefone"].astype(str).str.strip() != "")
+    ].copy()
+
+    return base
+
+
+def carregar_arquivo_leads_quentes():
+    """
+    Lê TODAS as abas do arquivo comprado.
+    Aba 'Empresas' = PJ.
+    Aba 'Planilha1' = PF.
+    Se houver outras abas, o sistema tenta classificar pelo nome/colunas.
+    """
+    if not os.path.exists(ARQUIVO_LEADS_QUENTES):
+        return pd.DataFrame()
+
+    try:
+        abas = pd.read_excel(
+            ARQUIVO_LEADS_QUENTES,
+            sheet_name=None,
+            dtype=str
+        )
+    except Exception:
+        return pd.DataFrame()
+
+    partes = []
+
+    for nome_aba, df in abas.items():
+        if df is None or df.empty:
+            continue
+
+        aba = str(nome_aba).strip().lower()
+        tem_cnpj = localizar_coluna(df, ["cnpj"]) is not None
+        tem_razao = localizar_coluna(df, ["razao social", "razão social"]) is not None
+
+        if "empresa" in aba or "pj" in aba or tem_cnpj or tem_razao:
+            tipo = "MEI/CNPJ"
+        else:
+            tipo = "Pessoa Física"
+
+        parte = padronizar_leads_quentes(df, tipo)
+        if not parte.empty:
+            partes.append(parte)
+
+    if not partes:
+        return pd.DataFrame()
+
+    quente = pd.concat(partes, ignore_index=True)
+    quente = remover_duplicados(quente)
+    return quente
+
+
+def sincronizar_leads_quentes(base):
+    """
+    Inclui os leads quentes na base do CRM sem duplicar contatos já existentes.
+    Preserva status/observações de quem já estiver cadastrado.
+    """
+    quentes = carregar_arquivo_leads_quentes()
+
+    if quentes.empty:
+        return base
+
+    base = base.copy()
+
+    if "Temperatura" not in base.columns:
+        base["Temperatura"] = ""
+
+    # Se o contato já existe, marcamos como quente sem apagar o histórico.
+    telefones_quentes = set(
+        quentes["Telefone"].fillna("").astype(str).str.strip().tolist()
+    ) - {""}
+    emails_quentes = set(
+        quentes["Email"].fillna("").astype(str).str.strip().str.lower().tolist()
+    ) - {""}
+
+    for idx, row in base.iterrows():
+        tel = limpar_texto(row.get("Telefone", ""))
+        email = limpar_texto(row.get("Email", "")).lower()
+
+        if (tel and tel in telefones_quentes) or (email and email in emails_quentes):
+            base.at[idx, "Temperatura"] = "🔥 Quente"
+            base.at[idx, "Origem"] = "🔥 Leads Quentes — São Paulo"
+
+    combinado = pd.concat([base, quentes], ignore_index=True)
+    combinado = remover_duplicados(combinado)
+
+    if "Temperatura" not in combinado.columns:
+        combinado["Temperatura"] = ""
+
+    return combinado
+
+
 def carregar_base_crm():
     if os.path.exists(ARQUIVO_BASE):
         try:
-            return pd.read_csv(ARQUIVO_BASE, dtype=str).fillna("")
+            base = pd.read_csv(ARQUIVO_BASE, dtype=str).fillna("")
         except Exception:
-            pass
+            base = montar_base_inicial()
+    else:
+        base = montar_base_inicial()
 
-    base = montar_base_inicial()
-    salvar_base_crm(base)
-    return base
+    if "Temperatura" not in base.columns:
+        base["Temperatura"] = ""
+
+    base_atualizada = sincronizar_leads_quentes(base)
+
+    # Salva a sincronização para os leads quentes permanecerem no CRM.
+    salvar_base_crm(base_atualizada)
+
+    return base_atualizada
 
 
 def salvar_base_crm(df):
@@ -573,6 +743,7 @@ menu = st.sidebar.radio(
     [
         "Dashboard",
         "Leads",
+        "🔥 Leads Quentes SP",
         "Adicionar/Importar",
         "Atualizar Contato",
         "Mensagens",
@@ -598,14 +769,18 @@ if menu == "Dashboard":
     pj = len(leads[leads["Tipo Cliente"] == "MEI/CNPJ"]) if not leads.empty else 0
     total_produtos = len(produtos)
     produtos_disponiveis = len(produtos[produtos["Estoque"] > 0]) if not produtos.empty else 0
+    total_quentes = len(
+        leads[leads.get("Temperatura", "").astype(str).str.contains("Quente", na=False)]
+    ) if "Temperatura" in leads.columns else 0
 
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
 
     col1.metric("👥 Total Leads", total_leads)
-    col2.metric("🙋 Pessoa Física", pf)
-    col3.metric("🏢 MEI/CNPJ", pj)
-    col4.metric("🛍️ Produtos", total_produtos)
-    col5.metric("✅ À pronta entrega", produtos_disponiveis)
+    col2.metric("🔥 Leads Quentes", total_quentes)
+    col3.metric("🙋 Pessoa Física", pf)
+    col4.metric("🏢 MEI/CNPJ", pj)
+    col5.metric("🛍️ Produtos", total_produtos)
+    col6.metric("✅ À pronta entrega", produtos_disponiveis)
 
     st.markdown("---")
 
@@ -690,6 +865,103 @@ if menu == "Leads":
             csv,
             "clientes_nome_telefone_estado.csv",
             "text/csv"
+        )
+
+
+# ==========================================================
+# LEADS QUENTES SP
+# ==========================================================
+
+if menu == "🔥 Leads Quentes SP":
+    st.subheader("🔥 Leads Quentes — São Paulo")
+    st.caption("Base comprada separada em Pessoa Física e Pessoa Jurídica.")
+
+    leads = carregar_base_crm()
+
+    if "Temperatura" not in leads.columns:
+        leads["Temperatura"] = ""
+
+    quentes = leads[
+        leads["Temperatura"].fillna("").astype(str).str.contains("Quente", na=False)
+    ].copy()
+
+    if quentes.empty:
+        st.warning(
+            "Não encontrei a planilha de leads quentes na pasta do app. "
+            "Deixe o arquivo Excel junto do app.py."
+        )
+    else:
+        pf = quentes[quentes["Tipo Cliente"] == "Pessoa Física"].copy()
+        pj = quentes[quentes["Tipo Cliente"] == "MEI/CNPJ"].copy()
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("🔥 Total de Leads Quentes", len(quentes))
+        c2.metric("🙋 Pessoa Física", len(pf))
+        c3.metric("🏢 Pessoa Jurídica", len(pj))
+
+        busca_quente = st.text_input(
+            "🔎 Buscar lead quente",
+            placeholder="Digite nome ou telefone"
+        )
+
+        if busca_quente:
+            termo = busca_quente.strip().lower()
+
+            def filtrar_busca(df):
+                nome = df["Nome"].fillna("").astype(str).str.lower()
+                telefone = df["Telefone"].fillna("").astype(str).str.lower()
+                return df[
+                    nome.str.contains(termo, na=False, regex=False)
+                    | telefone.str.contains(termo, na=False, regex=False)
+                ]
+
+            pf = filtrar_busca(pf)
+            pj = filtrar_busca(pj)
+
+        aba_pf, aba_pj = st.tabs([
+            f"🙋 Pessoa Física ({len(pf)})",
+            f"🏢 Pessoa Jurídica ({len(pj)})"
+        ])
+
+        with aba_pf:
+            st.markdown("### 🔥 Leads Quentes PF")
+            pf_exibir = pf[["Nome", "Telefone", "UF"]].copy()
+            pf_exibir = pf_exibir.rename(columns={"UF": "Estado"})
+            st.dataframe(
+                pf_exibir,
+                use_container_width=True,
+                height=520,
+                hide_index=True
+            )
+            st.download_button(
+                "⬇️ Baixar Leads Quentes PF",
+                pf_exibir.to_csv(index=False).encode("utf-8-sig"),
+                "leads_quentes_pf_sp.csv",
+                "text/csv",
+                key="download_quentes_pf"
+            )
+
+        with aba_pj:
+            st.markdown("### 🔥 Leads Quentes PJ")
+            pj_exibir = pj[["Nome", "Telefone", "UF"]].copy()
+            pj_exibir = pj_exibir.rename(columns={"UF": "Estado"})
+            st.dataframe(
+                pj_exibir,
+                use_container_width=True,
+                height=520,
+                hide_index=True
+            )
+            st.download_button(
+                "⬇️ Baixar Leads Quentes PJ",
+                pj_exibir.to_csv(index=False).encode("utf-8-sig"),
+                "leads_quentes_pj_sp.csv",
+                "text/csv",
+                key="download_quentes_pj"
+            )
+
+        st.info(
+            "💖 Nesta tela aparecem somente Nome, Telefone e Estado, "
+            "como você pediu. A identificação PF/PJ fica separada pelas abas."
         )
 
 
