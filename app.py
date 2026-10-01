@@ -391,10 +391,13 @@ def padronizar_leads_quentes(df, tipo_cliente):
 
 def carregar_arquivo_leads_quentes():
     """
-    Lê TODAS as abas do arquivo comprado.
-    Aba 'Empresas' = PJ.
-    Aba 'Planilha1' = PF.
-    Se houver outras abas, o sistema tenta classificar pelo nome/colunas.
+    Lê TODAS as abas do arquivo comprado como UMA ÚNICA BASE.
+    Conforme informado, todos os contatos desse arquivo são:
+    - Pessoa Física
+    - Leads Quentes
+    - São Paulo
+
+    Não existe separação PJ nesta base.
     """
     if not os.path.exists(ARQUIVO_LEADS_QUENTES):
         return pd.DataFrame()
@@ -410,21 +413,17 @@ def carregar_arquivo_leads_quentes():
 
     partes = []
 
-    for nome_aba, df in abas.items():
+    for _, df in abas.items():
         if df is None or df.empty:
             continue
 
-        aba = str(nome_aba).strip().lower()
-        tem_cnpj = localizar_coluna(df, ["cnpj"]) is not None
-        tem_razao = localizar_coluna(df, ["razao social", "razão social"]) is not None
+        parte = padronizar_leads_quentes(df, "Pessoa Física")
 
-        if "empresa" in aba or "pj" in aba or tem_cnpj or tem_razao:
-            tipo = "MEI/CNPJ"
-        else:
-            tipo = "Pessoa Física"
-
-        parte = padronizar_leads_quentes(df, tipo)
         if not parte.empty:
+            parte["Tipo Cliente"] = "Pessoa Física"
+            parte["Origem"] = "🔥 Leads Quentes — São Paulo"
+            parte["Temperatura"] = "🔥 Quente"
+            parte["UF"] = "SP"
             partes.append(parte)
 
     if not partes:
@@ -432,8 +431,14 @@ def carregar_arquivo_leads_quentes():
 
     quente = pd.concat(partes, ignore_index=True)
     quente = remover_duplicados(quente)
-    return quente
 
+    # Reforça a classificação após a deduplicação.
+    quente["Tipo Cliente"] = "Pessoa Física"
+    quente["Origem"] = "🔥 Leads Quentes — São Paulo"
+    quente["Temperatura"] = "🔥 Quente"
+    quente["UF"] = "SP"
+
+    return quente
 
 def sincronizar_leads_quentes(base):
     """
@@ -465,6 +470,8 @@ def sincronizar_leads_quentes(base):
         if (tel and tel in telefones_quentes) or (email and email in emails_quentes):
             base.at[idx, "Temperatura"] = "🔥 Quente"
             base.at[idx, "Origem"] = "🔥 Leads Quentes — São Paulo"
+            base.at[idx, "Tipo Cliente"] = "Pessoa Física"
+            base.at[idx, "UF"] = "SP"
 
     combinado = pd.concat([base, quentes], ignore_index=True)
     combinado = remover_duplicados(combinado)
@@ -879,7 +886,7 @@ if menu == "Leads":
 
 if menu == "🔥 Leads Quentes SP":
     st.subheader("🔥 Leads Quentes — São Paulo")
-    st.caption("Base comprada separada em Pessoa Física e Pessoa Jurídica.")
+    st.caption("Todos os contatos da planilha comprada reunidos em uma única lista de Pessoa Física.")
 
     leads = carregar_base_crm()
 
@@ -890,83 +897,59 @@ if menu == "🔥 Leads Quentes SP":
         leads["Temperatura"].fillna("").astype(str).str.contains("Quente", na=False)
     ].copy()
 
+    # Esta base comprada é integralmente PF.
+    if not quentes.empty:
+        quentes["Tipo Cliente"] = "Pessoa Física"
+        quentes["UF"] = "SP"
+
     if quentes.empty:
         st.warning(
             "Não encontrei a planilha de leads quentes na pasta do app. "
             "Deixe o arquivo Excel junto do app.py."
         )
     else:
-        pf = quentes[quentes["Tipo Cliente"] == "Pessoa Física"].copy()
-        pj = quentes[quentes["Tipo Cliente"] == "MEI/CNPJ"].copy()
-
-        c1, c2, c3 = st.columns(3)
-        c1.metric("🔥 Total de Leads Quentes", len(quentes))
-        c2.metric("🙋 Pessoa Física", len(pf))
-        c3.metric("🏢 Pessoa Jurídica", len(pj))
+        st.metric("🔥 Total de Leads Quentes PF", len(quentes))
 
         busca_quente = st.text_input(
             "🔎 Buscar lead quente",
             placeholder="Digite nome ou telefone"
         )
 
+        exibicao = quentes.copy()
+
         if busca_quente:
             termo = busca_quente.strip().lower()
+            nome = exibicao["Nome"].fillna("").astype(str).str.lower()
+            telefone = exibicao["Telefone"].fillna("").astype(str).str.lower()
 
-            def filtrar_busca(df):
-                nome = df["Nome"].fillna("").astype(str).str.lower()
-                telefone = df["Telefone"].fillna("").astype(str).str.lower()
-                return df[
-                    nome.str.contains(termo, na=False, regex=False)
-                    | telefone.str.contains(termo, na=False, regex=False)
-                ]
+            exibicao = exibicao[
+                nome.str.contains(termo, na=False, regex=False)
+                | telefone.str.contains(termo, na=False, regex=False)
+            ]
 
-            pf = filtrar_busca(pf)
-            pj = filtrar_busca(pj)
+        st.markdown(f"### 🔥 Leads Quentes PF ({len(exibicao)})")
 
-        aba_pf, aba_pj = st.tabs([
-            f"🙋 Pessoa Física ({len(pf)})",
-            f"🏢 Pessoa Jurídica ({len(pj)})"
-        ])
+        tabela = exibicao[["Nome", "Telefone", "UF"]].copy()
+        tabela = tabela.rename(columns={"UF": "Estado"})
 
-        with aba_pf:
-            st.markdown("### 🔥 Leads Quentes PF")
-            pf_exibir = pf[["Nome", "Telefone", "UF"]].copy()
-            pf_exibir = pf_exibir.rename(columns={"UF": "Estado"})
-            st.dataframe(
-                pf_exibir,
-                use_container_width=True,
-                height=520,
-                hide_index=True
-            )
-            st.download_button(
-                "⬇️ Baixar Leads Quentes PF",
-                pf_exibir.to_csv(index=False).encode("utf-8-sig"),
-                "leads_quentes_pf_sp.csv",
-                "text/csv",
-                key="download_quentes_pf"
-            )
+        st.dataframe(
+            tabela,
+            use_container_width=True,
+            height=560,
+            hide_index=True
+        )
 
-        with aba_pj:
-            st.markdown("### 🔥 Leads Quentes PJ")
-            pj_exibir = pj[["Nome", "Telefone", "UF"]].copy()
-            pj_exibir = pj_exibir.rename(columns={"UF": "Estado"})
-            st.dataframe(
-                pj_exibir,
-                use_container_width=True,
-                height=520,
-                hide_index=True
-            )
-            st.download_button(
-                "⬇️ Baixar Leads Quentes PJ",
-                pj_exibir.to_csv(index=False).encode("utf-8-sig"),
-                "leads_quentes_pj_sp.csv",
-                "text/csv",
-                key="download_quentes_pj"
-            )
+        st.download_button(
+            "⬇️ Baixar Leads Quentes SP",
+            tabela.to_csv(index=False).encode("utf-8-sig"),
+            "leads_quentes_pf_sp.csv",
+            "text/csv",
+            key="download_quentes_sp"
+        )
 
         st.info(
-            "💖 Nesta tela aparecem somente Nome, Telefone e Estado, "
-            "como você pediu. A identificação PF/PJ fica separada pelas abas."
+            "💖 Todos os contatos desta planilha são tratados juntos como "
+            "Pessoa Física — Lead Quente SP. Não há divisão PJ nesta base."
         )
 
 
