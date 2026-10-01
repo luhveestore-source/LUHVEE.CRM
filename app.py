@@ -21,6 +21,7 @@ ARQUIVO_BASE = "crm_luhvee_base.csv"
 ARQUIVO_ANTIGO = "brasi.xlsx"
 ARQUIVO_SP = "sp.xlsx"
 ARQUIVO_ESTOQUE = "estoque_base.xlsx"
+ARQUIVO_CATALOGO_ATUAL = "catalogo_atual.csv"
 ARQUIVO_PRODUTOS_CSV = "produtos.csv"
 ARQUIVO_LEADS_QUENTES = "Cosméticos, maquiagens, hidratantes e perfumes árabes originais - masculinos e femininos.xlsx"
 
@@ -510,7 +511,10 @@ def carregar_produtos():
     """
     df = None
 
-    if os.path.exists(ARQUIVO_ESTOQUE):
+    if os.path.exists(ARQUIVO_CATALOGO_ATUAL):
+        df = carregar_arquivo(ARQUIVO_CATALOGO_ATUAL)
+
+    elif os.path.exists(ARQUIVO_ESTOQUE):
         df = carregar_arquivo(ARQUIVO_ESTOQUE)
 
         if df is not None and not df.empty and len(df.columns) == 1:
@@ -747,6 +751,7 @@ menu = st.sidebar.radio(
         "Adicionar/Importar",
         "Atualizar Contato",
         "Mensagens",
+        "📦 Atualizar Catálogo",
         "Catálogo",
         "Campanhas",
         "WhatsApp"
@@ -1218,6 +1223,70 @@ if menu == "Mensagens":
                 st.info("Esse lead não tem e-mail cadastrado.")
 
             st.warning("⚠️ Evite disparo em massa. Personalize a abordagem e respeite pedidos de remoção da lista.")
+
+
+# ==========================================================
+# ATUALIZAR CATÁLOGO
+# ==========================================================
+
+if menu == "📦 Atualizar Catálogo":
+    st.subheader("📦 Atualizar Catálogo LuhVee Stores ❤️")
+    st.caption("Envie o CSV ou Excel atualizado do seu estoque. O CRM passará a usar esse arquivo automaticamente.")
+
+    arquivo_catalogo = st.file_uploader(
+        "Selecione a planilha atualizada",
+        type=["csv", "xlsx", "xls"],
+        key="upload_catalogo"
+    )
+
+    if arquivo_catalogo is not None:
+        try:
+            if arquivo_catalogo.name.lower().endswith(".csv"):
+                novo_catalogo = pd.read_csv(arquivo_catalogo, sep=None, engine="python", dtype=str).fillna("")
+            else:
+                novo_catalogo = pd.read_excel(arquivo_catalogo, dtype=str).fillna("")
+
+            # Normaliza somente para a prévia; o arquivo original é salvo como CSV.
+            ren = {}
+            for c in novo_catalogo.columns:
+                n = str(c).strip().upper()
+                if "PRODUTO" in n or n == "NOME": ren[c] = "Produto"
+                elif "CATEGORIA" in n: ren[c] = "Categoria"
+                elif "PREÇO VENDA" in n or "PRECO VENDA" in n or n == "PREÇO" or n == "PRECO": ren[c] = "Preço Venda"
+                elif "ESTOQUE" in n or "QUANTIDADE" in n or n == "QTD": ren[c] = "Estoque"
+            previa = novo_catalogo.rename(columns=ren)
+
+            necessarias = ["Produto", "Preço Venda", "Estoque"]
+            faltando = [c for c in necessarias if c not in previa.columns]
+
+            if faltando:
+                st.error("Não encontrei estas colunas obrigatórias: " + ", ".join(faltando))
+            else:
+                if "Categoria" not in previa.columns:
+                    previa["Categoria"] = ""
+
+                previa_cliente = previa[["Produto", "Categoria", "Preço Venda", "Estoque"]].copy()
+                st.success(f"Planilha reconhecida: {len(previa_cliente)} produtos.")
+                st.markdown("### Prévia — somente dados de venda")
+                st.dataframe(previa_cliente.head(100), use_container_width=True, hide_index=True)
+
+                if st.button("✅ Atualizar catálogo agora", type="primary"):
+                    novo_catalogo.to_csv(ARQUIVO_CATALOGO_ATUAL, index=False, encoding="utf-8-sig")
+                    st.cache_data.clear()
+                    st.success("💖 Catálogo atualizado! O CRM já está usando os novos produtos, preços e estoques.")
+                    st.rerun()
+
+        except Exception as e:
+            st.error("Não consegui ler essa planilha. Confira se ela está em CSV ou Excel válido.")
+            st.write(e)
+
+    produtos_atuais = carregar_produtos()
+    if not produtos_atuais.empty:
+        st.markdown("---")
+        st.markdown("### Catálogo atualmente ativo")
+        ativo = produtos_atuais[["Produto", "Categoria", "Preço Venda", "Estoque"]].copy()
+        ativo["Preço Venda"] = ativo["Preço Venda"].apply(moeda)
+        st.dataframe(ativo, use_container_width=True, height=420, hide_index=True)
 
 
 # ==========================================================
